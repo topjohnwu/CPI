@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 
-# Usage: ./run.sh <source_file>
-# Note: llvm built binaries can be in LLVM_BIN variable
+# Usage: ./run.sh [-b] <c source>
+# With -b, it will rebuild libsafe_rt and LLVMCPI
 
-[ -z $LLVM_BIN ] || export PATH="$LLVM_BIN:$PATH"
+# Note: llvm built binaries can be in LLVM_BIN env variable
 
-if [ "$1" = "-b" ]; then
-  # Rebuild
+[[ -z $LLVM_BIN ]] || export PATH="$LLVM_BIN:$PATH"
+
+if [[ "$1" = "-b" ]]; then
+  # Rebuild libraries
   cwd=`pwd`
   cd ../build
   make -j4
@@ -20,19 +22,15 @@ case `uname -s` in
   *)       exit 1;;
 esac
 
-# Get filename
 src=$1
 name=${src%.*}.llvm
 
-# Compile program
-clang -emit-llvm -c $src -o ${name}.bc
-llvm-dis ${name}.bc -o ${name}.ll
-clang ${name}.bc -o ${name}.out
+# Compile test program
+clang -S -emit-llvm -c $src -o ${name}.ll
+clang ${name}.ll -o ${name}.out
 
-# Run our pass
-opt -load ../build/LLVMCPI.${dll} -cpi ${name}.bc > ${name}.p.bc
-llvm-dis ${name}.p.bc -o ${name}.p.ll
-clang ${name}.p.bc -o ${name}.p.out
+# Run CPI pass
+opt -S -o ${name}.p.ll -load ../build/pass/LLVMCPI.${dll} -cpi -debug-only=cpi ${name}.ll
 
-# Clean all bytecode (we can't read it anyways..)
-rm -f ${name}*.bc
+# Build patched code and link to libsafe_rt
+clang++ ${name}.p.ll -L../build -lsafe_rt -o ${name}.p.out

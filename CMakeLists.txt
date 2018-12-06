@@ -13,7 +13,10 @@ if (APPLE)
 	list (APPEND CMAKE_CXX_FLAGS "-undefined dynamic_lookup")
 endif(APPLE)
 
-add_llvm_loadable_module(
-		LLVMCPI
-		CPI.cpp
+add_library(
+		safe_rt
+        STATIC
+		safe_rt/rt.cpp
 )
+
+add_subdirectory(pass)
