@@ -11,3 +11,6 @@ struct CPI : public ModulePass {
     }
 };
 
+char CPI::ID = 0;
+RegisterPass<CPI> X("cpi", "Code Pointer Integrity");
+
