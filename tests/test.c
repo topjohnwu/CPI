@@ -2,25 +2,38 @@
 #include <stdlib.h>
 #include <string.h>
 
-static void f1(const char *s) {
-	printf("F1: %s\n", s);
+struct foo {
+	int i;
+	void (*func)();
+};
+
+static void f1() {
+	printf("F1\n");
 }
 
-static void f2(const char *s) {
-	printf("F2: %s\n", s);
+static void f2() {
+	printf("F2\n");
 }
 
 int main(int argc, char const *argv[]) {
-	void (*fptr)(const char *);
+	void (*fptr)();
+
+	struct foo bar;
+	bar.func = f1;
 
 	/* Prevent segfault */
-	if (argc < 3)
+	if (argc < 2)
 		return 1;
 
-	if (strcmp(argv[1], "1") == 0)
+	if (strcmp(argv[1], "1") == 0) {
 		fptr = f1;
-	else
+		bar.func = f2;
+	} else {
 		fptr = f2;
-	fptr(argv[2]);
+		bar.func = f1;
+	}
+
+	fptr();
+	bar.func();
 	return 0;
 }

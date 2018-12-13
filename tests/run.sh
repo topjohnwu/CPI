@@ -33,4 +33,4 @@ clang ${name}.ll -o ${name}.out
 opt -S -o ${name}.p.ll -load ../build/pass/LLVMCPI.${dll} -cpi -debug-only=cpi ${name}.ll
 
 # Build patched code and link to libsafe_rt
-clang++ ${name}.p.ll -L../build -lsafe_rt -o ${name}.p.out
+clang ${name}.p.ll -L../build -lsafe_rt -o ${name}.p.out
