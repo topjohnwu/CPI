@@ -16,7 +16,7 @@ endif(APPLE)
 add_library(
 		safe_rt
         STATIC
-		safe_rt/rt.cpp
+		safe_rt/rt.c
 )
 
 add_subdirectory(pass)
