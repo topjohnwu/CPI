@@ -82,9 +82,11 @@ private:
                         DEBUG(dbgs() << *I << "\n");
                     }
                 }
-                I->eraseFromParent();
+                if (I->getNumUses() == 0)
+                    I->eraseFromParent();
             }
         }
+
         // Stack maintenance
         if (hasInject) {
             auto fi = F.front().getFirstNonPHI();
