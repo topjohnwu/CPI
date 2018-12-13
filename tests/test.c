@@ -17,9 +17,7 @@ static void f2() {
 
 int main(int argc, char const *argv[]) {
 	void (*fptr)();
-
 	struct foo bar;
-	bar.func = f1;
 
 	/* Prevent segfault */
 	if (argc < 2)

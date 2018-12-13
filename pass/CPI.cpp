@@ -7,6 +7,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/GlobalVariable.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 #define DEBUG_TYPE "cpi"
@@ -25,6 +26,9 @@ struct CPI : public ModulePass {
         voidT = Type::getVoidTy(ctx);
         voidPT = Type::getInt8PtrTy(ctx);
         voidPPT = PointerType::get(voidPT, 0);
+
+        smPool = new GlobalVariable(M, voidPPT, false, GlobalValue::ExternalLinkage, nullptr, "__sm_pool");
+        smSp = new GlobalVariable(M, intT, false, GlobalValue::ExternalLinkage, nullptr, "__sm_sp");
 
         // Add function references in libsafe_rt
         smAlloca = cast<Function>(M.getOrInsertFunction("smAlloca", intT));
@@ -47,14 +51,18 @@ private:
     Function *smStore;
     Function *smLoad;
     Function *smDeref;  /* Temporarily unused */
+    Value *smPool;
+    Value *smSp;
 
     Type *voidT;
     PointerType *voidPT;
     PointerType *voidPPT;
 
     void runOnFunction(Function &F) {
+        bool hasInject = false;
         for (auto &bb : F) {
             auto v = getCPSPtrs(bb);
+            hasInject |= !v.empty();
             for (auto I : v) {
                 IRBuilder<> b(I);
 
@@ -75,6 +83,17 @@ private:
                     }
                 }
                 I->eraseFromParent();
+            }
+        }
+        // Stack maintenance
+        if (hasInject) {
+            auto fi = F.front().getFirstNonPHI();
+            auto spLoad = new LoadInst(smSp, "", fi);
+            for (auto &bb : F) {
+                auto ti = bb.getTerminator();
+                if (isa<ReturnInst>(ti)) {
+                    new StoreInst(spLoad, smSp, ti);
+                }
             }
         }
     }
