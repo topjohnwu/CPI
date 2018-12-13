@@ -22,11 +22,12 @@ struct CPI : public ModulePass {
         LLVMContext &ctx = M.getContext();
 
         // Commonly used types
-        Type *intT = Type::getInt32Ty(ctx);
+        intT = Type::getInt32Ty(ctx);
         voidT = Type::getVoidTy(ctx);
         voidPT = Type::getInt8PtrTy(ctx);
         voidPPT = PointerType::get(voidPT, 0);
 
+        // Add global variables in libsafe_rt
         smPool = new GlobalVariable(M, voidPPT, false, GlobalValue::ExternalLinkage, nullptr, "__sm_pool");
         smSp = new GlobalVariable(M, intT, false, GlobalValue::ExternalLinkage, nullptr, "__sm_sp");
 
@@ -54,6 +55,7 @@ private:
     Value *smPool;
     Value *smSp;
 
+    Type *intT;
     Type *voidT;
     PointerType *voidPT;
     PointerType *voidPPT;
@@ -102,14 +104,18 @@ private:
 
     void swapStore(Instruction *idx, StoreInst *store) {
         IRBuilder<> b(store);
+        auto pool = b.CreateLoad(smPool);
+        auto off = b.CreateGEP(voidPT, pool, idx);
         auto cast = b.CreatePointerCast(store->getValueOperand(), voidPT);
-        b.CreateCall(smStore, {idx, cast});
+        b.CreateStore(cast, off);
         store->eraseFromParent();
     }
 
     void swapLoad(Instruction *idx, LoadInst *load) {
         IRBuilder<> b(load);
-        auto raw = b.CreateCall(smLoad, idx);
+        auto pool = b.CreateLoad(smPool);
+        auto off = b.CreateGEP(voidPT, pool, idx);
+        auto raw = b.CreateLoad(off);
         auto cast = b.CreatePointerCast(raw, load->getType());
         BasicBlock::iterator ii(load);
         ReplaceInstWithValue(load->getParent()->getInstList(), ii, cast);
