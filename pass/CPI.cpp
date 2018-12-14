@@ -129,22 +129,19 @@ private:
     }
 
     bool swapFunctionPtrAlloca(BasicBlock &bb) {
-        bool hasInject = false;
         auto v = getFunctionPtrAlloca(bb);
-        hasInject |= !v.empty();
-        for (auto I : v) {
-            IRBuilder<> b(I);
-            auto idx = b.CreateCall(smAlloca, None, I->getName());
+        for (auto alloc : v) {
+            IRBuilder<> b(alloc);
+            auto idx = b.CreateCall(smAlloca, None, alloc->getName());
             DEBUG(dbgs() << "ADD:" << *idx << "\n");
-            swapPtr(I, idx);
+            swapPtr(alloc, idx);
         }
-        return hasInject;
+        return !v.empty();
     }
 
     bool swapStructAlloca(BasicBlock &bb) {
         bool hasInject = false;
-        auto v = getSSAlloca(bb);
-        for (auto alloc : v) {
+        for (auto alloc : getSSAlloca(bb)) {
             std::vector<GetElementPtrInst *> rmList;
             for (auto user : alloc->users()) {
                 /* Find dereference to function pointer */
@@ -168,6 +165,7 @@ private:
                 }
             }
             if (!rmList.empty()) {
+                hasInject = true;
                 IRBuilder<> b(alloc->getNextNode());
                 auto idx = b.CreateCall(smAlloca);
                 DEBUG(dbgs() << "ADD:" << *idx << "\n");

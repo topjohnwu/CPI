@@ -1,7 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#define INIT_SZ 4
+#define INIT_SZ 1
 
 void **__sm_pool;
 int __sm_sp = 0;
