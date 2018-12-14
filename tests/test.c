@@ -8,8 +8,9 @@ struct foo {
 };
 
 struct bar {
-	void (*func)();
+	void (*f1)();
 	int i;
+	void (*f2)();
 };
 
 static void T() {
@@ -33,15 +34,18 @@ static void test_2(int i) {
     if (i) {
         fptr = T;
         f.func = T;
-        b.func = T;
+        b.f1 = T;
+        b.f2 = T;
     } else {
         fptr = F;
         f.func = F;
-        b.func = F;
+        b.f1 = F;
+        b.f2 = F;
     }
     fptr();
     f.func();
-    b.func();
+    b.f1();
+    b.f2();
 }
 
 int main(int argc, char const *argv[]) {
