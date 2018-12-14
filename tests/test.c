@@ -7,6 +7,11 @@ struct foo {
 	void (*func)();
 };
 
+struct bar {
+	void (*func)();
+	int i;
+};
+
 static void f1() {
 	printf("F1\n");
 }
@@ -17,7 +22,8 @@ static void f2() {
 
 int main(int argc, char const *argv[]) {
 	void (*fptr)();
-	struct foo bar;
+	struct foo f;
+	struct bar b;
 
 	/* Prevent segfault */
 	if (argc < 2)
@@ -25,13 +31,13 @@ int main(int argc, char const *argv[]) {
 
 	if (strcmp(argv[1], "1") == 0) {
 		fptr = f1;
-		bar.func = f2;
+		f.func = f2;
 	} else {
 		fptr = f2;
-		bar.func = f1;
+		f.func = f1;
 	}
 
 	fptr();
-	bar.func();
+	f.func();
 	return 0;
 }

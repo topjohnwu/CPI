@@ -1,4 +1,7 @@
 #include <vector>
+#include <map>
+#include <algorithm>
+#include <set>
 
 #include "llvm/Pass.h"
 #include "llvm/Support/Debug.h"
@@ -33,9 +36,18 @@ struct CPI : public ModulePass {
 
         // Add function references in libsafe_rt
         smAlloca = cast<Function>(M.getOrInsertFunction("smAlloca", intT));
-        smStore = cast<Function>(M.getOrInsertFunction("smStore", voidT, intT, voidPT));
+        /*smStore = cast<Function>(M.getOrInsertFunction("smStore", voidT, intT, voidPT));
         smLoad = cast<Function>(M.getOrInsertFunction("smLoad", voidPT, intT));
-        smDeref = cast<Function>(M.getOrInsertFunction("smDeref", voidPPT, intT));
+        smDeref = cast<Function>(M.getOrInsertFunction("smDeref", voidPPT, intT));*/
+
+        // Find all sensitive structs
+        for (auto s : M.getIdentifiedStructTypes()) {
+            for (unsigned i = 0; i < s->getNumElements(); ++i) {
+                if (isFunctionPtr(s->getElementType(i))) {
+                    sensitiveStructs[s].insert(i);
+                }
+            }
+        }
 
         // Loop through all functions
         for (auto &F: M.getFunctionList()) {
@@ -49,9 +61,6 @@ struct CPI : public ModulePass {
 
 private:
     Function *smAlloca;
-    Function *smStore;
-    Function *smLoad;
-    Function *smDeref;  /* Temporarily unused */
     Value *smPool;
     Value *smSp;
 
@@ -60,33 +69,18 @@ private:
     PointerType *voidPT;
     PointerType *voidPPT;
 
+    /* Unused */
+    /*Function *smStore;
+    Function *smLoad;
+    Function *smDeref;*/
+
+    std::map<Type*, std::set<int> > sensitiveStructs;
+
     void runOnFunction(Function &F) {
         bool hasInject = false;
         for (auto &bb : F) {
-            auto v = getCPSPtrs(bb);
-            hasInject |= !v.empty();
-            for (auto I : v) {
-                IRBuilder<> b(I);
-
-                // Get index from smAlloca
-                auto idx = b.CreateCall(smAlloca, None, I->getName());
-
-                // Swap out all uses (store and load)
-                for (auto a : I->users()) {
-                    StoreInst *s;
-                    LoadInst *l;
-                    if ((s = dyn_cast<StoreInst>(a))) {
-                        swapStore(idx, s);
-                    } else if ((l = dyn_cast<LoadInst>(a))) {
-                        swapLoad(idx, l);
-                    } else {
-                        /* TODO: Dunno when this will happen, spit logs for now */
-                        DEBUG(dbgs() << *I << "\n");
-                    }
-                }
-                if (I->getNumUses() == 0)
-                    I->eraseFromParent();
-            }
+            hasInject |= swapFunctionPtrAlloca(bb);
+            hasInject |= swapStructAlloca(bb);
         }
 
         // Stack maintenance
@@ -108,6 +102,7 @@ private:
         auto off = b.CreateGEP(voidPT, pool, idx);
         auto cast = b.CreatePointerCast(store->getValueOperand(), voidPT);
         b.CreateStore(cast, off);
+        DEBUG(dbgs() << "SWAP:" << *store << "\n");
         store->eraseFromParent();
     }
 
@@ -117,18 +112,102 @@ private:
         auto off = b.CreateGEP(voidPT, pool, idx);
         auto raw = b.CreateLoad(off);
         auto cast = b.CreatePointerCast(raw, load->getType());
+        DEBUG(dbgs() << "SWAP:" << *load << "\n");
         BasicBlock::iterator ii(load);
         ReplaceInstWithValue(load->getParent()->getInstList(), ii, cast);
     }
 
-    /* TODO: Might need better CPS pointer detection
-     * Currently only covers function pointer alloca */
-    std::vector<Instruction *> getCPSPtrs(BasicBlock &bb) {
+    void swapPtr(Instruction *from, Instruction *to) {
+        // Swap out all uses (store and load)
+        for (auto a : from->users()) {
+            StoreInst *s;
+            LoadInst *l;
+            if ((s = dyn_cast<StoreInst>(a))) {
+                swapStore(to, s);
+            } else if ((l = dyn_cast<LoadInst>(a))) {
+                swapLoad(to, l);
+            } else {
+                /* TODO: Dunno when this will happen, spit logs for now */
+                DEBUG(dbgs() << "Unknown:" << *from << "\n");
+            }
+        }
+        DEBUG(dbgs() << "RM:" << *from << "\n");
+        if (from->getNumUses() == 0)
+            from->eraseFromParent();
+    }
+
+    bool swapFunctionPtrAlloca(BasicBlock &bb) {
+        bool hasInject = false;
+        auto v = getFunctionPtrAlloca(bb);
+        hasInject |= !v.empty();
+        for (auto I : v) {
+            IRBuilder<> b(I);
+            auto idx = b.CreateCall(smAlloca, None, I->getName());
+            DEBUG(dbgs() << "ADD:" << *idx << "\n");
+            swapPtr(I, idx);
+        }
+        return hasInject;
+    }
+
+    bool swapStructAlloca(BasicBlock &bb) {
+        bool hasInject = false;
+        auto v = getSSAlloca(bb);
+        for (auto alloc : v) {
+            std::vector<GetElementPtrInst *> rmList;
+            for (auto user : alloc->users()) {
+                /* Find dereference to function pointer */
+                GetElementPtrInst *gep;
+                if ((gep = dyn_cast<GetElementPtrInst>(user))) {
+                    int i = 0;
+                    for (auto &a : gep->indices()) {
+                        /* Only get second dereference */
+                        if (i == 1) {
+                            ConstantInt *ci;
+                            if ((ci = dyn_cast<ConstantInt>(a))) {
+                                int idx = ci->getSExtValue();
+                                if (sensitiveStructs[alloc->getAllocatedType()].count(idx)) {
+                                    rmList.push_back(gep);
+                                }
+                            }
+                            break;
+                        }
+                        ++i;
+                    }
+                }
+            }
+            if (!rmList.empty()) {
+                IRBuilder<> b(alloc->getNextNode());
+                auto idx = b.CreateCall(smAlloca);
+                DEBUG(dbgs() << "ADD:" << *idx << "\n");
+                for (auto u: rmList) {
+                    swapPtr(u, idx);
+                }
+            }
+        }
+        return hasInject;
+    }
+
+    std::vector<Instruction *> getFunctionPtrAlloca(BasicBlock &bb) {
         std::vector<Instruction *> v;
         for (Instruction &I : bb) {
             if (isAllocaFunctionPtr(I)) {
-                DEBUG(dbgs() << "CPS: " << I << "\n");
+                DEBUG(dbgs() << "SENS:" << I << "\n");
                 v.push_back(&I);
+            }
+        }
+        return v;
+    }
+
+    std::vector<AllocaInst *> getSSAlloca(BasicBlock &bb) {
+        std::vector<AllocaInst *> v;
+        AllocaInst *ai;
+        for (auto &I : bb) {
+            if ((ai = dyn_cast<AllocaInst>(&I))) {
+                auto i = sensitiveStructs.find(ai->getAllocatedType());
+                if (i != sensitiveStructs.end()) {
+                    DEBUG(dbgs() << "SENS:" << *ai << "\n");
+                    v.push_back(ai);
+                }
             }
         }
         return v;
