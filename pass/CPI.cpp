@@ -41,7 +41,7 @@ struct CPI : public ModulePass {
         for (auto s : M.getIdentifiedStructTypes()) {
             for (unsigned i = 0; i < s->getNumElements(); ++i) {
                 if (isFunctionPtr(s->getElementType(i))) {
-                    sensitiveStructs[s].insert(i);
+                    ssMap[s].push_back(i);
                 }
             }
         }
@@ -66,13 +66,14 @@ private:
     PointerType *voidPT;
     PointerType *voidPPT;
 
-    std::map<Type*, std::set<int> > sensitiveStructs;
+    // A map of StructType to the list of entries numbers that are function pointers
+    std::map<Type*, std::vector<int> > ssMap;
 
     void runOnFunction(Function &F) {
         bool hasInject = false;
         for (auto &bb : F) {
             hasInject |= swapFunctionPtrAlloca(bb);
-            hasInject |= swapStructAlloca(bb);
+            hasInject |= handleStructAlloca(bb);
         }
 
         // Stack maintenance
@@ -140,30 +141,27 @@ private:
         return !v.empty();
     }
 
-    bool swapStructAlloca(BasicBlock &bb) {
+    bool handleStructAlloca(BasicBlock &bb) {
         bool hasInject = false;
-        for (auto alloc : getSSAlloca(bb)) {
-            std::vector<GetElementPtrInst *> rmList;
-            for (auto user : alloc->users()) {
-                /* Find struct entry to function pointer (2nd GEP index, or 3rd operand) */
-                GetElementPtrInst *gep;
-                if ((gep = dyn_cast<GetElementPtrInst>(user))) {
-                    ConstantInt *ci;
-                    if (gep->getNumOperands() >= 3 && (ci = dyn_cast<ConstantInt>(gep->getOperand(2)))) {
-                        int entry = ci->getSExtValue();
-                        if (sensitiveStructs[alloc->getAllocatedType()].count(entry)) {
+        for (auto alloc: getSSAlloca(bb)) {
+            auto elist = ssMap.find(alloc->getAllocatedType());
+            if (elist != ssMap.end()) {
+                for (int fpentry : elist->second) {
+                    std::vector<GetElementPtrInst *> rmList;
+                    for (auto user : alloc->users()) {
+                        auto *gep = dyn_cast<GetElementPtrInst>(user);
+                        if (isSensitiveGEP(gep, fpentry))
                             rmList.push_back(gep);
+                    }
+                    if (!rmList.empty()) {
+                        hasInject = true;
+                        IRBuilder<> b(alloc->getNextNode());
+                        auto idx = b.CreateCall(smAlloca, None, alloc->getName() + "." + std::to_string(fpentry));
+                        DEBUG(dbgs() << "ADD:" << *idx << "\n");
+                        for (auto u: rmList) {
+                            swapPtr(u, idx);
                         }
                     }
-                }
-            }
-            if (!rmList.empty()) {
-                hasInject = true;
-                IRBuilder<> b(alloc->getNextNode());
-                auto idx = b.CreateCall(smAlloca);
-                DEBUG(dbgs() << "ADD:" << *idx << "\n");
-                for (auto u: rmList) {
-                    swapPtr(u, idx);
                 }
             }
         }
@@ -186,15 +184,22 @@ private:
         std::vector<AllocaInst *> v;
         AllocaInst *ai;
         for (auto &I : bb) {
-            if ((ai = dyn_cast<AllocaInst>(&I))) {
-                auto i = sensitiveStructs.find(ai->getAllocatedType());
-                if (i != sensitiveStructs.end()) {
-                    DEBUG(dbgs() << "SENS:" << *ai << "\n");
-                    v.push_back(ai);
-                }
+            if ((ai = dyn_cast<AllocaInst>(&I)) && ssMap.count(ai->getAllocatedType())) {
+                DEBUG(dbgs() << "SENS:" << *ai << "\n");
+                v.push_back(ai);
             }
         }
         return v;
+    }
+
+    /* Check struct entry to function pointer (2nd GEP index, or 3rd operand) */
+    bool isSensitiveGEP(GetElementPtrInst *gep, int fpentry) {
+        if (gep == nullptr)
+            return false;
+        ConstantInt *ci;
+        return gep->getNumOperands() >= 3 &&
+        (ci = dyn_cast<ConstantInt>(gep->getOperand(2))) &&
+        ci->getSExtValue() == fpentry;
     }
 
     bool isFunctionPtr(Type *T) {
