@@ -35,10 +35,7 @@ struct CPI : public ModulePass {
         smSp = new GlobalVariable(M, intT, false, GlobalValue::ExternalLinkage, nullptr, "__sm_sp");
 
         // Add function references in libsafe_rt
-        smAlloca = cast<Function>(M.getOrInsertFunction("smAlloca", intT));
-        /*smStore = cast<Function>(M.getOrInsertFunction("smStore", voidT, intT, voidPT));
-        smLoad = cast<Function>(M.getOrInsertFunction("smLoad", voidPT, intT));
-        smDeref = cast<Function>(M.getOrInsertFunction("smDeref", voidPPT, intT));*/
+        smAlloca = cast<Function>(M.getOrInsertFunction("__sm_alloca", intT));
 
         // Find all sensitive structs
         for (auto s : M.getIdentifiedStructTypes()) {
@@ -68,11 +65,6 @@ private:
     Type *voidT;
     PointerType *voidPT;
     PointerType *voidPPT;
-
-    /* Unused */
-    /*Function *smStore;
-    Function *smLoad;
-    Function *smDeref;*/
 
     std::map<Type*, std::set<int> > sensitiveStructs;
 
