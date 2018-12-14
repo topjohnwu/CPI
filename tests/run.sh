@@ -17,9 +17,17 @@ if [[ "$1" = "-b" ]]; then
 fi
 
 case `uname -s` in
-  Linux)   dll=so;;
-  Darwin)  dll=dylib;;
-  *)       exit 1;;
+  Linux)
+	dll=so
+	CPI_FLAG="-cpi"
+	;;
+  Darwin)
+	dll=dylib
+	CPI_FLAG="-cpi -debug-only=cpi"
+	;;
+  *)
+	exit 1
+	;;
 esac
 
 src=$1
@@ -30,11 +38,7 @@ clang -S -emit-llvm -c $src -o ${name}.ll
 clang ${name}.ll -o ${name}.out
 
 # Run CPI pass
-if [[ "$OSTYPE" == "linux-gnu" ]]; then
-  opt -S -o ${name}.p.ll -load ../build/pass/LLVMCPI.${dll} -cpi ${name}.ll
-else
-  opt -S -o ${name}.p.ll -load ../build/pass/LLVMCPI.${dll} -cpi -debug-only=cpi ${name}.ll
-fi
+opt -S -o ${name}.p.ll -load ../build/pass/LLVMCPI.${dll} $CPI_FLAG ${name}.ll
 
 # Build patched code and link to libsafe_rt
 clang ${name}.p.ll -L../build -lsafe_rt -o ${name}.p.out

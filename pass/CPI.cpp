@@ -61,7 +61,7 @@ private:
     Value *smPool;
     Value *smSp;
 
-    Type *intT;
+    IntegerType *intT;
     Type *voidT;
     PointerType *voidPT;
     PointerType *voidPPT;
@@ -123,9 +123,10 @@ private:
                 DEBUG(dbgs() << "Unknown:" << *from << "\n");
             }
         }
-        DEBUG(dbgs() << "RM:" << *from << "\n");
-        if (from->getNumUses() == 0)
+        if (from->getNumUses() == 0) {
+            DEBUG(dbgs() << "RM:" << *from << "\n");
             from->eraseFromParent();
+        }
     }
 
     bool swapFunctionPtrAlloca(BasicBlock &bb) {
@@ -144,23 +145,15 @@ private:
         for (auto alloc : getSSAlloca(bb)) {
             std::vector<GetElementPtrInst *> rmList;
             for (auto user : alloc->users()) {
-                /* Find dereference to function pointer */
+                /* Find struct entry to function pointer (2nd GEP index, or 3rd operand) */
                 GetElementPtrInst *gep;
                 if ((gep = dyn_cast<GetElementPtrInst>(user))) {
-                    int i = 0;
-                    for (auto &a : gep->indices()) {
-                        /* Only get second dereference */
-                        if (i == 1) {
-                            ConstantInt *ci;
-                            if ((ci = dyn_cast<ConstantInt>(a))) {
-                                int idx = ci->getSExtValue();
-                                if (sensitiveStructs[alloc->getAllocatedType()].count(idx)) {
-                                    rmList.push_back(gep);
-                                }
-                            }
-                            break;
+                    ConstantInt *ci;
+                    if (gep->getNumOperands() >= 3 && (ci = dyn_cast<ConstantInt>(gep->getOperand(2)))) {
+                        int entry = ci->getSExtValue();
+                        if (sensitiveStructs[alloc->getAllocatedType()].count(entry)) {
+                            rmList.push_back(gep);
                         }
-                        ++i;
                     }
                 }
             }
@@ -177,12 +170,13 @@ private:
         return hasInject;
     }
 
-    std::vector<Instruction *> getFunctionPtrAlloca(BasicBlock &bb) {
-        std::vector<Instruction *> v;
-        for (Instruction &I : bb) {
-            if (isAllocaFunctionPtr(I)) {
+    std::vector<AllocaInst *> getFunctionPtrAlloca(BasicBlock &bb) {
+        std::vector<AllocaInst *> v;
+        AllocaInst *ai;
+        for (auto &I : bb) {
+            if ((ai = dyn_cast<AllocaInst>(&I)) && isFunctionPtr(ai->getAllocatedType())) {
                 DEBUG(dbgs() << "SENS:" << I << "\n");
-                v.push_back(&I);
+                v.push_back(ai);
             }
         }
         return v;
@@ -201,11 +195,6 @@ private:
             }
         }
         return v;
-    }
-
-    bool isAllocaFunctionPtr(Instruction &I) {
-        AllocaInst *i;
-        return (i = dyn_cast<AllocaInst>(&I)) && isFunctionPtr(i->getAllocatedType());
     }
 
     bool isFunctionPtr(Type *T) {
