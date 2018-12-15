@@ -52,6 +52,21 @@ static void test_2(int i) {
     b.f2();
 }
 
+static void test() {
+    int a = 0;
+    for (int i = 0; i < 10; ++i) {
+        struct foo f;
+        a += 2;
+        f.i = a;
+        if (i < 5) {
+            int a = i + 2;
+            struct bar b;
+            f.i = b.i = a;
+        }
+
+    }
+}
+
 int main(int argc, char const *argv[]) {
     /* Prevent segfault */
     if (argc < 2)
@@ -63,6 +78,7 @@ int main(int argc, char const *argv[]) {
     test_1(val);
     printf("* test_1\n");
     test_1(val);
+    test();
 
     return 0;
 }
