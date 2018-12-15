@@ -29,11 +29,10 @@ struct CPI : public ModulePass {
         voidPPT = PointerType::get(voidPT, 0);
 
         // Add global variables in libsafe_rt
-        smPool = new GlobalVariable(M, voidPPT, false, GlobalValue::ExternalLinkage, nullptr, "__sm_pool");
         smSp = new GlobalVariable(M, intT, false, GlobalValue::ExternalLinkage, nullptr, "__sm_sp");
 
         // Add function references in libsafe_rt
-        smAlloca = cast<Function>(M.getOrInsertFunction("__sm_alloca", intT));
+        smAlloca = cast<Function>(M.getOrInsertFunction("__sm_alloca", voidPPT));
 
         // Find all sensitive structs
         for (auto s : M.getIdentifiedStructTypes()) {
@@ -56,7 +55,6 @@ struct CPI : public ModulePass {
 
 private:
     Function *smAlloca;
-    Value *smPool;
     Value *smSp;
 
     IntegerType *intT;
@@ -72,24 +70,11 @@ private:
 
         BasicBlock &entryBlock = F.getEntryBlock();
 
-        // Create a placeholder load for __sm_pool
-        auto poolAdress = new LoadInst(smPool, "smPoolAddress", entryBlock.getFirstNonPHI());
-
         // Alloca only happens in the first basic block
-        hasInject |= swapFunctionPtrAlloca(entryBlock, poolAdress);
-        hasInject |= handleStructAlloca(entryBlock, poolAdress);
+        hasInject |= swapFunctionPtrAlloca(entryBlock);
+        hasInject |= handleStructAlloca(entryBlock);
 
         if (hasInject) {
-            // Find the last __sm_alloca, and move __sm_pool load after it
-            CallInst *lastAlloca = nullptr;
-            for (auto &I : entryBlock) {
-                CallInst *c;
-                if ((c = dyn_cast<CallInst>(&I)) && c->getCalledFunction() == smAlloca)
-                    lastAlloca = c;
-            }
-            assert(lastAlloca);   /* hasInject == true implies lastAlloca != nullptr */
-            poolAdress->moveAfter(lastAlloca);
-
             // Create checkpoint
             auto spLoad = new LoadInst(smSp, "smStackCheckpoint", entryBlock.getFirstNonPHI());
             for (auto &bb : F) {
@@ -99,40 +84,35 @@ private:
                     new StoreInst(spLoad, smSp, ti);
                 }
             }
-        } else {
-            // The additional load is not needed
-            poolAdress->eraseFromParent();
         }
     }
 
-    void swapStore(Instruction *idx, StoreInst *store, LoadInst *poolAddress) {
+    void swapStore(Instruction *addr, StoreInst *store) {
         IRBuilder<> b(store);
-        auto off = b.CreateGEP(voidPT, poolAddress, idx);
         auto cast = b.CreatePointerCast(store->getValueOperand(), voidPT);
-        b.CreateStore(cast, off);
+        b.CreateStore(cast, addr);
         DEBUG(dbgs() << "SWAP:" << *store << "\n");
         store->eraseFromParent();
     }
 
-    void swapLoad(Instruction *idx, LoadInst *load, LoadInst *poolAddress) {
+    void swapLoad(Instruction *addr, LoadInst *load) {
         IRBuilder<> b(load);
-        auto off = b.CreateGEP(voidPT, poolAddress, idx);
-        auto raw = b.CreateLoad(off);
+        auto raw = b.CreateLoad(addr);
         auto cast = b.CreatePointerCast(raw, load->getType());
         DEBUG(dbgs() << "SWAP:" << *load << "\n");
         BasicBlock::iterator ii(load);
         ReplaceInstWithValue(load->getParent()->getInstList(), ii, cast);
     }
 
-    void swapPtr(Instruction *from, Instruction *to, LoadInst *poolAddress) {
+    void swapPtr(Instruction *from, Instruction *to) {
         // Swap out all uses (store and load)
         for (auto a : from->users()) {
             StoreInst *s;
             LoadInst *l;
             if ((s = dyn_cast<StoreInst>(a))) {
-                swapStore(to, s, poolAddress);
+                swapStore(to, s);
             } else if ((l = dyn_cast<LoadInst>(a))) {
-                swapLoad(to, l, poolAddress);
+                swapLoad(to, l);
             } else {
                 /* TODO: Dunno when this will happen, spit logs for now */
                 DEBUG(dbgs() << "Unknown:" << *from << "\n");
@@ -144,18 +124,20 @@ private:
         }
     }
 
-    bool swapFunctionPtrAlloca(BasicBlock &bb, LoadInst *poolAddress) {
+    bool swapFunctionPtrAlloca(BasicBlock &bb) {
         auto v = getFunctionPtrAlloca(bb);
         for (auto alloc : v) {
             IRBuilder<> b(alloc);
-            auto idx = b.CreateCall(smAlloca, None, alloc->getName());
-            DEBUG(dbgs() << "ADD:" << *idx << "\n");
-            swapPtr(alloc, idx, poolAddress);
+            std::string name(alloc->getName());
+            auto addr = b.CreateCall(smAlloca);
+            DEBUG(dbgs() << "ADD:" << *addr << "\n");
+            swapPtr(alloc, addr);
+            addr->setName(name);
         }
         return !v.empty();
     }
 
-    bool handleStructAlloca(BasicBlock &bb, LoadInst *poolAddress) {
+    bool handleStructAlloca(BasicBlock &bb) {
         bool hasInject = false;
         for (auto alloc: getSSAlloca(bb)) {
             auto elist = ssMap.find(alloc->getAllocatedType());
@@ -170,10 +152,10 @@ private:
                     if (!rmList.empty()) {
                         hasInject = true;
                         IRBuilder<> b(alloc->getNextNode());
-                        auto idx = b.CreateCall(smAlloca, None, alloc->getName() + "." + std::to_string(fpentry));
-                        DEBUG(dbgs() << "ADD:" << *idx << "\n");
+                        auto addr = b.CreateCall(smAlloca, None, alloc->getName() + "." + std::to_string(fpentry));
+                        DEBUG(dbgs() << "ADD:" << *addr << "\n");
                         for (auto u: rmList) {
-                            swapPtr(u, idx, poolAddress);
+                            swapPtr(u, addr);
                         }
                     }
                 }
