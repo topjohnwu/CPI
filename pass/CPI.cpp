@@ -125,47 +125,52 @@ private:
     }
 
     bool handleSSFPEntries(Value *ssp, int fpentry, Instruction *insert, bool needCommit = false) {
-        std::vector<GetElementPtrInst *> rmList;
+        std::map<int, std::vector<GetElementPtrInst *> > rmMap;
         for (auto user : ssp->users()) {
+            int idx;
             auto *gep = dyn_cast<GetElementPtrInst>(user);
-            if (isSensitiveGEP(gep, fpentry))
-                rmList.push_back(gep);
+            if ((idx = isSensitiveGEP(gep, fpentry)) >= 0) {
+                rmMap[idx].push_back(gep);
+            }
         }
-        if (rmList.empty())
+        if (rmMap.empty())
             return false;
 
-        IRBuilder<> b(insert);
-        auto addr = b.CreateCall(smAlloca, None, ssp->getName() + "." + std::to_string(fpentry));
-        DEBUG(dbgs() << "ADD:" << *addr << "\n");
-        GetElementPtrInst *orig = GetElementPtrInst::Create(nullptr, ssp,
-                {ConstantInt::get(intT, 0), ConstantInt::get(intT, fpentry)},
-                addr->getName() + ".orig", addr->getNextNode());
+        for (const auto &geps : rmMap) {
+            IRBuilder<> b(insert);
+            auto addr = b.CreateCall(smAlloca, None,
+                    ssp->getName() + "." + std::to_string(geps.first) + "." + std::to_string(fpentry));
+            DEBUG(dbgs() << "ADD:" << *addr << "\n");
+            GetElementPtrInst *orig = GetElementPtrInst::Create(nullptr, ssp,
+                    {ConstantInt::get(intT, geps.first), ConstantInt::get(intT, fpentry)},
+                    addr->getName() + ".orig", addr->getNextNode());
 
-        for (auto u: rmList) {
-            swapPtr(u, addr);
-        }
+            for (auto u: geps.second) {
+                swapPtr(u, addr);
+            }
 
-        if (needCommit) {
-            restore(addr, voidPT, orig, orig->getNextNode());
-            for (auto &bb : *insert->getParent()->getParent()) {
-                auto ti = bb.getTerminator();
-                if (isa<ReturnInst>(ti)) {
-                    commit(addr, orig, orig->getResultElementType(), ti);
+            if (needCommit) {
+                restore(addr, voidPT, orig, orig->getNextNode());
+                for (auto &bb : *insert->getParent()->getParent()) {
+                    auto ti = bb.getTerminator();
+                    if (isa<ReturnInst>(ti)) {
+                        commit(addr, orig, orig->getResultElementType(), ti);
+                    }
                 }
             }
-        }
 
-        // Check for external calls
-        for (auto user : ssp->users()) {
-            CallInst *ci;
-            if ((ci = dyn_cast<CallInst>(user))) {
-                commitAndRestore(addr, voidPT, orig, orig->getResultElementType(), ci);
+            // Check for external calls
+            for (auto user : ssp->users()) {
+                CallInst *ci;
+                if ((ci = dyn_cast<CallInst>(user))) {
+                    commitAndRestore(addr, voidPT, orig, orig->getResultElementType(), ci);
+                }
             }
-        }
 
-        // Remove if not needed
-        if (orig->getNumUses() == 0)
-            orig->eraseFromParent();
+            // Remove if not needed
+            if (orig->getNumUses() == 0)
+                orig->eraseFromParent();
+        }
 
         return true;
     }
@@ -258,13 +263,15 @@ private:
     }
 
     /* Check struct entry to function pointer (2nd GEP index, or 3rd operand) */
-    bool isSensitiveGEP(GetElementPtrInst *gep, int fpentry) {
-        if (gep == nullptr)
-            return false;
+    int isSensitiveGEP(GetElementPtrInst *gep, int fpentry) {
         ConstantInt *ci;
-        return gep->getNumOperands() >= 3 &&
-        (ci = dyn_cast<ConstantInt>(gep->getOperand(2))) &&
-        ci->getSExtValue() == fpentry;
+        if(gep && gep->getNumOperands() >= 3 &&
+            (ci = dyn_cast<ConstantInt>(gep->getOperand(2))) &&
+            ci->getSExtValue() == fpentry &&
+            (ci = dyn_cast<ConstantInt>(gep->getOperand(1)))) {
+            return ci->getSExtValue();
+        }
+        return -1;
     }
 
     bool isFunctionPtr(Type *T) {
