@@ -24,6 +24,7 @@ static void F() {
 static void test_1(int i);
 static void test_2(int i);
 static void test_3(struct bar *b);
+static void test_4(struct bar *b);
 
 static void test_1(int i) {
     void (*fptr)();
@@ -58,6 +59,13 @@ static void test_2(int i) {
 }
 
 static void test_3(struct bar *b) {
+    b->f2();
+    printf("* test_4\n");
+    test_4(b);
+    b->f2();
+}
+
+static void test_4(struct bar *b) {
     b->f2 = b->i ? F : T;
 }
 

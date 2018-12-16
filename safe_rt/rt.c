@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <assert.h>
 
 #define BLOCK_SZ 16
 #define PTR_MEM_SZ(i) ((i) * sizeof(void *))
@@ -9,7 +10,7 @@ int __sm_sp = 0;
 static void ***block_table;
 static int table_sz = 0;
 
-void **__sm_alloca() {
+static inline void **sm_alloca() {
     int block_num = __sm_sp >> 4;
     if (block_num == table_sz) {
         int new_sz = table_sz ? table_sz * 2 : 1;
@@ -22,4 +23,19 @@ void **__sm_alloca() {
         block_table[block_num] = malloc(PTR_MEM_SZ(BLOCK_SZ));
     fprintf(stderr, "__sm_alloca %d, %d\n", __sm_sp, table_sz << 4);
     return &block_table[block_num][__sm_sp++ & 0xF];
+}
+
+void **__sm_alloca() {
+    return sm_alloca();
+}
+
+void **__sm_malloc(void **ua) {
+    void **sa = sm_alloca();
+    *sa = *ua;
+    return sa;
+}
+
+void *__sm_load(void **sa, void **ua) {
+    assert(*sa == *ua);
+    return *sa;
 }
