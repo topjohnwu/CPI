@@ -140,23 +140,20 @@ private:
     bool handleStructAlloca(BasicBlock &bb) {
         bool hasInject = false;
         for (auto alloc: getSSAlloca(bb)) {
-            auto elist = ssMap.find(alloc->getAllocatedType());
-            if (elist != ssMap.end()) {
-                for (int fpentry : elist->second) {
-                    std::vector<GetElementPtrInst *> rmList;
-                    for (auto user : alloc->users()) {
-                        auto *gep = dyn_cast<GetElementPtrInst>(user);
-                        if (isSensitiveGEP(gep, fpentry))
-                            rmList.push_back(gep);
-                    }
-                    if (!rmList.empty()) {
-                        hasInject = true;
-                        IRBuilder<> b(alloc->getNextNode());
-                        auto addr = b.CreateCall(smAlloca, None, alloc->getName() + "." + std::to_string(fpentry));
-                        DEBUG(dbgs() << "ADD:" << *addr << "\n");
-                        for (auto u: rmList) {
-                            swapPtr(u, addr);
-                        }
+            for (int fpentry : ssMap[alloc->getAllocatedType()]) {
+                std::vector<GetElementPtrInst *> rmList;
+                for (auto user : alloc->users()) {
+                    auto *gep = dyn_cast<GetElementPtrInst>(user);
+                    if (isSensitiveGEP(gep, fpentry))
+                        rmList.push_back(gep);
+                }
+                if (!rmList.empty()) {
+                    hasInject = true;
+                    IRBuilder<> b(alloc->getNextNode());
+                    auto addr = b.CreateCall(smAlloca, None, alloc->getName() + "." + std::to_string(fpentry));
+                    DEBUG(dbgs() << "ADD:" << *addr << "\n");
+                    for (auto u: rmList) {
+                        swapPtr(u, addr);
                     }
                 }
             }
@@ -164,11 +161,21 @@ private:
         return hasInject;
     }
 
-    std::vector<AllocaInst *> getFunctionPtrAlloca(BasicBlock &bb) {
+    std::vector<AllocaInst *> getSensitiveAlloca(BasicBlock &bb, const std::function<bool(AllocaInst *)> &filter) {
         std::vector<AllocaInst *> v;
         AllocaInst *ai;
         for (auto &I : bb) {
-            if ((ai = dyn_cast<AllocaInst>(&I)) && isFunctionPtr(ai->getAllocatedType())) {
+            if ((ai = dyn_cast<AllocaInst>(&I)) && filter(ai)) {
+                bool localOnly = true;
+                for (auto user : ai->users()) {
+                    // If the pointer is passed to a function call, skip it
+                    if (isa<CallInst>(user)) {
+                        localOnly = false;
+                        break;
+                    }
+                }
+                if (!localOnly)
+                    continue;
                 DEBUG(dbgs() << "SENS:" << I << "\n");
                 v.push_back(ai);
             }
@@ -176,16 +183,12 @@ private:
         return v;
     }
 
+    std::vector<AllocaInst *> getFunctionPtrAlloca(BasicBlock &bb) {
+        return getSensitiveAlloca(bb, [this](auto i) -> bool {return isFunctionPtr(i->getAllocatedType());});
+    }
+
     std::vector<AllocaInst *> getSSAlloca(BasicBlock &bb) {
-        std::vector<AllocaInst *> v;
-        AllocaInst *ai;
-        for (auto &I : bb) {
-            if ((ai = dyn_cast<AllocaInst>(&I)) && ssMap.count(ai->getAllocatedType())) {
-                DEBUG(dbgs() << "SENS:" << *ai << "\n");
-                v.push_back(ai);
-            }
-        }
-        return v;
+        return getSensitiveAlloca(bb, [this](auto i) -> bool {return ssMap.count(i->getAllocatedType());});
     }
 
     /* Check struct entry to function pointer (2nd GEP index, or 3rd operand) */

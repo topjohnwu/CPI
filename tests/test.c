@@ -21,7 +21,9 @@ static void F() {
     printf("false\n");
 }
 
+static void test_1(int i);
 static void test_2(int i);
+static void test_3(struct bar *b, int i);
 
 static void test_1(int i) {
     void (*fptr)();
@@ -38,32 +40,28 @@ static void test_2(int i) {
     if (i) {
         fptr = T;
         f.func = T;
-        b.f1 = T;
-        b.f2 = F;
+        // b.f1 = T;
+        // b.f2 = F;
     } else {
         fptr = F;
         f.func = F;
-        b.f1 = F;
-        b.f2 = T;
+        // b.f1 = F;
+        // b.f2 = T;
     }
+    test_3(&b, i);
     fptr();
     f.func();
     b.f1();
     b.f2();
 }
 
-static void test() {
-    int a = 0;
-    for (int i = 0; i < 10; ++i) {
-        struct foo f;
-        a += 2;
-        f.i = a;
-        if (i < 5) {
-            int a = i + 2;
-            struct bar b;
-            f.i = b.i = a;
-        }
-
+static void test_3(struct bar *b, int i) {
+    if (i) {
+        b->f1 = T;
+        b->f2 = F;
+    } else {
+        b->f1 = F;
+        b->f2 = T;
     }
 }
 
@@ -78,7 +76,6 @@ int main(int argc, char const *argv[]) {
     test_1(val);
     printf("* test_1\n");
     test_1(val);
-    test();
 
     return 0;
 }
