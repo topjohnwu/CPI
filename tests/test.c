@@ -14,16 +14,16 @@ struct bar {
 };
 
 static void T() {
-    printf("true\n");
+    printf("T\n");
 }
 
 static void F() {
-    printf("false\n");
+    printf("F\n");
 }
 
 static void test_1(int i);
 static void test_2(int i);
-static void test_3(struct bar *b, int i);
+static void test_3(struct bar *b);
 
 static void test_1(int i) {
     void (*fptr)();
@@ -37,32 +37,28 @@ static void test_2(int i) {
     void (*fptr)();
     struct foo f;
     struct bar b;
+    b.i = i;
     if (i) {
         fptr = T;
         f.func = T;
-        // b.f1 = T;
-        // b.f2 = F;
+        b.f1 = T;
+        b.f2 = T;
     } else {
         fptr = F;
         f.func = F;
-        // b.f1 = F;
-        // b.f2 = T;
+        b.f1 = F;
+        b.f2 = F;
     }
-    test_3(&b, i);
+    printf("* test_3\n");
+    test_3(&b);
     fptr();
     f.func();
     b.f1();
     b.f2();
 }
 
-static void test_3(struct bar *b, int i) {
-    if (i) {
-        b->f1 = T;
-        b->f2 = F;
-    } else {
-        b->f1 = F;
-        b->f2 = T;
-    }
+static void test_3(struct bar *b) {
+    b->f2 = b->i ? F : T;
 }
 
 int main(int argc, char const *argv[]) {

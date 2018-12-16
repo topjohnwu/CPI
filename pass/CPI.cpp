@@ -73,6 +73,7 @@ private:
         // Alloca only happens in the first basic block
         hasInject |= swapFunctionPtrAlloca(entryBlock);
         hasInject |= handleStructAlloca(entryBlock);
+        hasInject |= handleStructPointers(F);
 
         if (hasInject) {
             // Create checkpoint
@@ -85,6 +86,88 @@ private:
                 }
             }
         }
+    }
+
+    bool swapFunctionPtrAlloca(BasicBlock &bb) {
+        auto v = getFunctionPtrAlloca(bb);
+        for (auto alloc : v) {
+            IRBuilder<> b(alloc);
+            std::string name(alloc->getName());
+            auto addr = b.CreateCall(smAlloca);
+            DEBUG(dbgs() << "ADD:" << *addr << "\n");
+            swapPtr(alloc, addr);
+            addr->setName(name);
+        }
+        return !v.empty();
+    }
+
+    bool handleStructAlloca(BasicBlock &bb) {
+        bool hasInject = false;
+        for (auto alloc: getSSAlloca(bb)) {
+            for (int fpentry : ssMap[alloc->getAllocatedType()]) {
+                hasInject |= handleSSFPEntries(alloc, fpentry, alloc->getNextNode());
+            }
+        }
+        return hasInject;
+    }
+
+    bool handleStructPointers(Function &F) {
+        bool hasInject = false;
+        auto fi = F.getEntryBlock().getFirstNonPHI();
+        for (auto &arg : F.args()) {
+            if (isSSPtr(arg.getType())) {
+                for (int fpentry : ssMap[cast<PointerType>(arg.getType())->getElementType()]) {
+                    hasInject |= handleSSFPEntries(&arg, fpentry, fi, true);
+                }
+            }
+        }
+        return hasInject;
+    }
+
+    bool handleSSFPEntries(Value *ssp, int fpentry, Instruction *insert, bool needCommit = false) {
+        std::vector<GetElementPtrInst *> rmList;
+        for (auto user : ssp->users()) {
+            auto *gep = dyn_cast<GetElementPtrInst>(user);
+            if (isSensitiveGEP(gep, fpentry))
+                rmList.push_back(gep);
+        }
+        if (rmList.empty())
+            return false;
+
+        IRBuilder<> b(insert);
+        auto addr = b.CreateCall(smAlloca, None, ssp->getName() + "." + std::to_string(fpentry));
+        DEBUG(dbgs() << "ADD:" << *addr << "\n");
+        GetElementPtrInst *orig = GetElementPtrInst::Create(nullptr, ssp,
+                {ConstantInt::get(intT, 0), ConstantInt::get(intT, fpentry)},
+                addr->getName() + ".orig", addr->getNextNode());
+
+        for (auto u: rmList) {
+            swapPtr(u, addr);
+        }
+
+        if (needCommit) {
+            restore(addr, voidPT, orig, orig->getNextNode());
+            for (auto &bb : *insert->getParent()->getParent()) {
+                auto ti = bb.getTerminator();
+                if (isa<ReturnInst>(ti)) {
+                    commit(addr, orig, orig->getResultElementType(), ti);
+                }
+            }
+        }
+
+        // Check for external calls
+        for (auto user : ssp->users()) {
+            CallInst *ci;
+            if ((ci = dyn_cast<CallInst>(user))) {
+                commitAndRestore(addr, voidPT, orig, orig->getResultElementType(), ci);
+            }
+        }
+
+        // Remove if not needed
+        if (orig->getNumUses() == 0)
+            orig->eraseFromParent();
+
+        return true;
     }
 
     void swapStore(Instruction *addr, StoreInst *store) {
@@ -123,70 +206,24 @@ private:
         }
     }
 
-    bool swapFunctionPtrAlloca(BasicBlock &bb) {
-        auto v = getFunctionPtrAlloca(bb);
-        for (auto alloc : v) {
-            IRBuilder<> b(alloc);
-            std::string name(alloc->getName());
-            auto addr = b.CreateCall(smAlloca);
-            DEBUG(dbgs() << "ADD:" << *addr << "\n");
-            swapPtr(alloc, addr);
-            addr->setName(name);
-        }
-        return !v.empty();
-    }
-
-    bool handleStructAlloca(BasicBlock &bb) {
-        bool hasInject = false;
-        for (auto alloc: getSSAlloca(bb)) {
-            for (int fpentry : ssMap[alloc->getAllocatedType()]) {
-                std::vector<GetElementPtrInst *> rmList;
-                for (auto user : alloc->users()) {
-                    auto *gep = dyn_cast<GetElementPtrInst>(user);
-                    if (isSensitiveGEP(gep, fpentry))
-                        rmList.push_back(gep);
-                }
-                if (rmList.empty())
-                    continue;
-
-                hasInject = true;
-                IRBuilder<> b(alloc->getNextNode());
-                auto addr = b.CreateCall(smAlloca, None, alloc->getName() + "." + std::to_string(fpentry));
-                DEBUG(dbgs() << "ADD:" << *addr << "\n");
-
-                // Check for external calls
-                GetElementPtrInst *gep = nullptr;
-                for (auto user : alloc->users()) {
-                    CallInst *ci;
-                    if ((ci = dyn_cast<CallInst>(user))) {
-                        if (!gep) {
-                            gep = cast<GetElementPtrInst>(rmList.front()->clone());
-                            gep->setName(addr->getName() + ".orig");
-                            gep->insertAfter(addr);
-                        }
-                        commitAndRestore(addr, voidPT, gep, gep->getResultElementType(), ci);
-                    }
-                }
-
-                for (auto u: rmList) {
-                    swapPtr(u, addr);
-                }
-            }
-        }
-        return hasInject;
-    }
-
-    void commitAndRestore(Value *a, Type *aType, Value *b, Type *bType, Instruction *i) {
-        // Commit sm memory to actual memory
+    // Commit sm memory to actual memory
+    void commit(Value *a, Value *b, Type *bType, Instruction *i) {
         IRBuilder<> builder(i);
         auto v = builder.CreateLoad(a);
         auto cast = builder.CreatePointerCast(v, bType);
         builder.CreateStore(cast, b);
-        // Restore actual memory back to sm memory
-        builder.SetInsertPoint(i->getNextNode());
-        v = builder.CreateLoad(b);
-        cast = builder.CreatePointerCast(v, aType);
+    }
+
+    void restore(Value *a, Type *aType, Value *b, Instruction *i) {
+        IRBuilder<> builder(i);
+        auto v = builder.CreateLoad(b);
+        auto cast = builder.CreatePointerCast(v, aType);
         builder.CreateStore(cast, a);
+    }
+
+    void commitAndRestore(Value *a, Type *aType, Value *b, Type *bType, Instruction *i) {
+        commit(a, b, bType, i);
+        restore(a, aType, b, i->getNextNode());
     }
 
     std::vector<AllocaInst *> getSensitiveAlloca(BasicBlock &bb, const std::function<bool(AllocaInst *)> &filter) {
@@ -233,6 +270,17 @@ private:
     bool isFunctionPtr(Type *T) {
         PointerType *t;
         return (t = dyn_cast<PointerType>(T)) && t->getElementType()->isFunctionTy();
+    }
+
+    bool isSSPtr(Type *T) {
+        PointerType *t;
+        if (!(t = dyn_cast<PointerType>(T)))
+            return false;
+        for (const auto &p : ssMap) {
+            if (t->getElementType() == p.first)
+                return true;
+        }
+        return false;
     }
 };
 
