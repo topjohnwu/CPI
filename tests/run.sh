@@ -34,7 +34,10 @@ src=$1
 name=${src%.*}.llvm
 
 # Compile test program
-clang -S -emit-llvm -c $src -o ${name}.ll
+# clang -S -emit-llvm -c $src -o ${name}.ll
+
+# Compile test program with alloca-hoisting and mem2reg
+clang -emit-llvm -O1 -mllvm -disable-llvm-optzns -c $src -o - | opt -S -alloca-hoisting -mem2reg -o ${name}.ll
 clang ${name}.ll -o ${name}.out
 
 # Run CPI pass

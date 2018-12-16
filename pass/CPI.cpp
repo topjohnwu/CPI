@@ -114,8 +114,7 @@ private:
             } else if ((l = dyn_cast<LoadInst>(a))) {
                 swapLoad(to, l);
             } else {
-                /* TODO: Dunno when this will happen, spit logs for now */
-                DEBUG(dbgs() << "Unknown:" << *from << "\n");
+                DEBUG(dbgs() << "OTHER:" << *from << "\n");
             }
         }
         if (from->getNumUses() == 0) {
@@ -147,18 +146,47 @@ private:
                     if (isSensitiveGEP(gep, fpentry))
                         rmList.push_back(gep);
                 }
-                if (!rmList.empty()) {
-                    hasInject = true;
-                    IRBuilder<> b(alloc->getNextNode());
-                    auto addr = b.CreateCall(smAlloca, None, alloc->getName() + "." + std::to_string(fpentry));
-                    DEBUG(dbgs() << "ADD:" << *addr << "\n");
-                    for (auto u: rmList) {
-                        swapPtr(u, addr);
+                if (rmList.empty())
+                    continue;
+
+                hasInject = true;
+                IRBuilder<> b(alloc->getNextNode());
+                auto addr = b.CreateCall(smAlloca, None, alloc->getName() + "." + std::to_string(fpentry));
+                DEBUG(dbgs() << "ADD:" << *addr << "\n");
+
+                // Check for external calls
+                GetElementPtrInst *gep = nullptr;
+                for (auto user : alloc->users()) {
+                    CallInst *ci;
+                    if ((ci = dyn_cast<CallInst>(user))) {
+                        if (!gep) {
+                            gep = cast<GetElementPtrInst>(rmList.front()->clone());
+                            gep->setName(addr->getName() + ".orig");
+                            gep->insertAfter(addr);
+                        }
+                        commitAndRestore(addr, voidPT, gep, gep->getResultElementType(), ci);
                     }
+                }
+
+                for (auto u: rmList) {
+                    swapPtr(u, addr);
                 }
             }
         }
         return hasInject;
+    }
+
+    void commitAndRestore(Value *a, Type *aType, Value *b, Type *bType, Instruction *i) {
+        // Commit sm memory to actual memory
+        IRBuilder<> builder(i);
+        auto v = builder.CreateLoad(a);
+        auto cast = builder.CreatePointerCast(v, bType);
+        builder.CreateStore(cast, b);
+        // Restore actual memory back to sm memory
+        builder.SetInsertPoint(i->getNextNode());
+        v = builder.CreateLoad(b);
+        cast = builder.CreatePointerCast(v, aType);
+        builder.CreateStore(cast, a);
     }
 
     std::vector<AllocaInst *> getSensitiveAlloca(BasicBlock &bb, const std::function<bool(AllocaInst *)> &filter) {
@@ -166,16 +194,6 @@ private:
         AllocaInst *ai;
         for (auto &I : bb) {
             if ((ai = dyn_cast<AllocaInst>(&I)) && filter(ai)) {
-                bool localOnly = true;
-                for (auto user : ai->users()) {
-                    // If the pointer is passed to a function call, skip it
-                    if (isa<CallInst>(user)) {
-                        localOnly = false;
-                        break;
-                    }
-                }
-                if (!localOnly)
-                    continue;
                 DEBUG(dbgs() << "SENS:" << I << "\n");
                 v.push_back(ai);
             }
@@ -184,11 +202,22 @@ private:
     }
 
     std::vector<AllocaInst *> getFunctionPtrAlloca(BasicBlock &bb) {
-        return getSensitiveAlloca(bb, [this](auto i) -> bool {return isFunctionPtr(i->getAllocatedType());});
+        return getSensitiveAlloca(bb, [this](auto i) -> bool {
+            if (!isFunctionPtr(i->getAllocatedType()))
+                return false;
+            for (auto user : i->users()) {
+                // If the pointer is passed to a function call, skip it
+                if (isa<CallInst>(user))
+                    return false;
+            }
+            return true;
+        });
     }
 
     std::vector<AllocaInst *> getSSAlloca(BasicBlock &bb) {
-        return getSensitiveAlloca(bb, [this](auto i) -> bool {return ssMap.count(i->getAllocatedType());});
+        return getSensitiveAlloca(bb, [this](auto i) -> bool {
+            return ssMap.count(i->getAllocatedType());
+        });
     }
 
     /* Check struct entry to function pointer (2nd GEP index, or 3rd operand) */
