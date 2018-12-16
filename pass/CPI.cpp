@@ -104,9 +104,7 @@ private:
     bool handleStructAlloca(BasicBlock &bb) {
         bool hasInject = false;
         for (auto alloc: getSSAlloca(bb)) {
-            for (int fpentry : ssMap[alloc->getAllocatedType()]) {
-                hasInject |= handleSSFPEntries(alloc, fpentry, alloc->getNextNode());
-            }
+            hasInject |= handleSSFPEntries(alloc, alloc->getNextNode());
         }
         return hasInject;
     }
@@ -115,22 +113,21 @@ private:
         bool hasInject = false;
         auto fi = F.getEntryBlock().getFirstNonPHI();
         for (auto &arg : F.args()) {
-            if (isSSPtr(arg.getType())) {
-                for (int fpentry : ssMap[cast<PointerType>(arg.getType())->getElementType()]) {
-                    hasInject |= handleSSFPEntries(&arg, fpentry, fi, true);
-                }
-            }
+            if (isSSPtr(arg.getType()))
+                hasInject |= handleSSFPEntries(&arg, fi, true);
         }
         return hasInject;
     }
 
-    bool handleSSFPEntries(Value *ssp, int fpentry, Instruction *insert, bool needCommit = false) {
-        std::map<int, std::vector<GetElementPtrInst *> > rmMap;
-        for (auto user : ssp->users()) {
-            int idx;
-            auto *gep = dyn_cast<GetElementPtrInst>(user);
-            if ((idx = isSensitiveGEP(gep, fpentry)) >= 0) {
-                rmMap[idx].push_back(gep);
+    bool handleSSFPEntries(Value *ssp, Instruction *insert, bool needCommit = false) {
+        std::map<std::pair<int, int>, std::vector<GetElementPtrInst *> > rmMap;
+        for (int sentry : ssMap[cast<PointerType>(ssp->getType())->getElementType()]) {
+            for (auto user : ssp->users()) {
+                int idx;
+                auto *gep = dyn_cast<GetElementPtrInst>(user);
+                if ((idx = isSensitiveGEP(gep, sentry)) >= 0) {
+                    rmMap[{idx, sentry}].push_back(gep);
+                }
             }
         }
         if (rmMap.empty())
@@ -139,10 +136,10 @@ private:
         for (const auto &geps : rmMap) {
             IRBuilder<> b(insert);
             auto addr = b.CreateCall(smAlloca, None,
-                    ssp->getName() + "." + std::to_string(geps.first) + "." + std::to_string(fpentry));
+                    ssp->getName() + "." + std::to_string(geps.first.first) + "." + std::to_string(geps.first.second));
             DEBUG(dbgs() << "ADD:" << *addr << "\n");
             GetElementPtrInst *orig = GetElementPtrInst::Create(nullptr, ssp,
-                    {ConstantInt::get(intT, geps.first), ConstantInt::get(intT, fpentry)},
+                    {ConstantInt::get(intT, geps.first.first), ConstantInt::get(intT, geps.first.second)},
                     addr->getName() + ".orig", addr->getNextNode());
 
             for (auto u: geps.second) {
