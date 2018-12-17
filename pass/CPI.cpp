@@ -99,7 +99,7 @@ private:
             std::string name(alloc->getName());
             auto addr = b.CreateCall(smAlloca);
             DEBUG(dbgs() << "ADD:" << *addr << "\n");
-            swapPtr(alloc, addr);
+            swapAllocaPtr(alloc, addr);
             addr->setName(name);
         }
         return !v.empty();
@@ -122,6 +122,52 @@ private:
             }
         }
         return hasInject;
+    }
+
+    bool handleSSFPEntries(Value *ssp, Instruction *insert) {
+        std::map<std::pair<int, int>, std::vector<GetElementPtrInst *> > rmMap;
+        for (int sentry : ssMap[cast<PointerType>(ssp->getType())->getElementType()]) {
+            for (auto user : ssp->users()) {
+                int idx;
+                auto *gep = dyn_cast<GetElementPtrInst>(user);
+                if ((idx = isSensitiveGEP(gep, sentry)) >= 0) {
+                    rmMap[{idx, sentry}].push_back(gep);
+                }
+            }
+        }
+        if (rmMap.empty())
+            return false;
+
+        for (const auto &geps : rmMap) {
+            IRBuilder<> b(insert);
+            auto addr = b.CreateCall(smAlloca, None,
+                    ssp->getName() + "." + std::to_string(geps.first.first) + "." + std::to_string(geps.first.second));
+            DEBUG(dbgs() << "ADD:" << *addr << "\n");
+            auto tmp = GetElementPtrInst::Create(nullptr, ssp,
+                    {ConstantInt::get(intT, geps.first.first), ConstantInt::get(intT, geps.first.second)},
+                    "", addr->getNextNode());
+            auto orig = CastInst::CreatePointerCast(tmp, voidPPT, addr->getName() + ".orig", tmp->getNextNode());
+
+            for (auto u: geps.second) {
+                swapAllocaPtr(u, addr);
+            }
+
+            // Check for external calls
+            for (auto user : ssp->users()) {
+                CallInst *ci;
+                if ((ci = dyn_cast<CallInst>(user))) {
+                    commitAndRestore(addr, orig, ci);
+                }
+            }
+
+            // Remove if not needed
+            if (orig->getNumUses() == 0) {
+                orig->eraseFromParent();
+                tmp->eraseFromParent();
+            }
+        }
+
+        return true;
     }
 
     bool handleUSSFPEntries(Value *ssp, Instruction *insert) {
@@ -151,96 +197,39 @@ private:
             DEBUG(dbgs() << "ADD:" << *addr << "\n");
 
             for (auto u: geps.second) {
-                uSwapPtr(u, addr, orig);
+                swapUnknownSrcPtr(u, addr, orig);
             }
 
             // Check for external calls
             for (auto user : ssp->users()) {
                 CallInst *ci;
                 if ((ci = dyn_cast<CallInst>(user))) {
-                    auto load = new LoadInst(orig);
-                    load->insertAfter(ci);
-                    (new StoreInst(load, addr))->insertAfter(load);
+                    restore(addr, orig, ci->getNextNode());
                 }
-            }
-
-        }
-
-        return true;
-    }
-
-    bool handleSSFPEntries(Value *ssp, Instruction *insert) {
-        std::map<std::pair<int, int>, std::vector<GetElementPtrInst *> > rmMap;
-        for (int sentry : ssMap[cast<PointerType>(ssp->getType())->getElementType()]) {
-            for (auto user : ssp->users()) {
-                int idx;
-                auto *gep = dyn_cast<GetElementPtrInst>(user);
-                if ((idx = isSensitiveGEP(gep, sentry)) >= 0) {
-                    rmMap[{idx, sentry}].push_back(gep);
-                }
-            }
-        }
-        if (rmMap.empty())
-            return false;
-
-        for (const auto &geps : rmMap) {
-            IRBuilder<> b(insert);
-            auto addr = b.CreateCall(smAlloca, None,
-                    ssp->getName() + "." + std::to_string(geps.first.first) + "." + std::to_string(geps.first.second));
-            DEBUG(dbgs() << "ADD:" << *addr << "\n");
-            GetElementPtrInst *orig = GetElementPtrInst::Create(nullptr, ssp,
-                    {ConstantInt::get(intT, geps.first.first), ConstantInt::get(intT, geps.first.second)},
-                    "", addr->getNextNode());
-            auto cast = CastInst::CreatePointerCast(orig, voidPPT, addr->getName() + ".orig", orig->getNextNode());
-
-            for (auto u: geps.second) {
-                swapPtr(u, addr);
-            }
-
-            // Check for external calls
-            for (auto user : ssp->users()) {
-                CallInst *ci;
-                if ((ci = dyn_cast<CallInst>(user))) {
-                    commitAndRestore(addr, cast, ci);
-                }
-            }
-
-            // Remove if not needed
-            if (cast->getNumUses() == 0) {
-                cast->eraseFromParent();
-                orig->eraseFromParent();
             }
         }
 
         return true;
     }
 
-    void swapStore(Instruction *addr, StoreInst *store) {
-        IRBuilder<> b(store);
-        auto cast = b.CreatePointerCast(store->getValueOperand(), voidPT);
-        b.CreateStore(cast, addr);
-        DEBUG(dbgs() << "SWAP:" << *store << "\n");
-        store->eraseFromParent();
-    }
-
-    void swapLoad(Instruction *addr, LoadInst *load) {
-        IRBuilder<> b(load);
-        auto raw = b.CreateLoad(addr);
-        auto cast = b.CreatePointerCast(raw, load->getType());
-        DEBUG(dbgs() << "SWAP:" << *load << "\n");
-        BasicBlock::iterator ii(load);
-        ReplaceInstWithValue(load->getParent()->getInstList(), ii, cast);
-    }
-
-    void swapPtr(Instruction *from, Instruction *to) {
+    void swapAllocaPtr(Instruction *from, Instruction *to) {
         // Swap out all uses (store and load)
         for (auto a : from->users()) {
             StoreInst *s;
             LoadInst *l;
             if ((s = dyn_cast<StoreInst>(a))) {
-                swapStore(to, s);
+                IRBuilder<> b(s);
+                auto cast = b.CreatePointerCast(s->getValueOperand(), voidPT);
+                b.CreateStore(cast, to);
+                DEBUG(dbgs() << "SWAP:" << *s << "\n");
+                s->eraseFromParent();
             } else if ((l = dyn_cast<LoadInst>(a))) {
-                swapLoad(to, l);
+                IRBuilder<> b(l);
+                auto raw = b.CreateLoad(to);
+                auto cast = b.CreatePointerCast(raw, l->getType());
+                DEBUG(dbgs() << "SWAP:" << *l << "\n");
+                BasicBlock::iterator ii(l);
+                ReplaceInstWithValue(l->getParent()->getInstList(), ii, cast);
             } else {
                 DEBUG(dbgs() << "OTHER:" << *from << "\n");
             }
@@ -251,33 +240,25 @@ private:
         }
     }
 
-    void uSwapStore(Instruction *addr, StoreInst *store, Value *orig) {
-        IRBuilder<> b(store);
-        auto cast = b.CreatePointerCast(store->getValueOperand(), voidPT);
-        b.CreateStore(cast, addr);
-        b.CreateStore(cast, orig);
-        DEBUG(dbgs() << "ADD:" << *store << "\n");
-        store->eraseFromParent();
-    }
-
-    void uSwapLoad(Instruction *addr, LoadInst *load, Value *orig) {
-        IRBuilder<> b(load);
-        auto raw = b.CreateCall(smLoad, {addr, orig});
-        auto cast = b.CreatePointerCast(raw, load->getType());
-        DEBUG(dbgs() << "SWAP:" << *load << "\n");
-        BasicBlock::iterator ii(load);
-        ReplaceInstWithValue(load->getParent()->getInstList(), ii, cast);
-    }
-
-    void uSwapPtr(Instruction *from, Instruction *to, Value *orig) {
+    void swapUnknownSrcPtr(Instruction *from, Instruction *to, Value *orig) {
         // Swap out all uses (store and load)
         for (auto a : from->users()) {
             StoreInst *s;
             LoadInst *l;
             if ((s = dyn_cast<StoreInst>(a))) {
-                uSwapStore(to, s, orig);
+                IRBuilder<> b(s);
+                auto cast = b.CreatePointerCast(s->getValueOperand(), voidPT);
+                b.CreateStore(cast, to);
+                b.CreateStore(cast, orig);
+                DEBUG(dbgs() << "SWAP:" << *s << "\n");
+                s->eraseFromParent();
             } else if ((l = dyn_cast<LoadInst>(a))) {
-                uSwapLoad(to, l, orig);
+                IRBuilder<> b(l);
+                auto raw = b.CreateCall(smLoad, {to, orig});
+                auto cast = b.CreatePointerCast(raw, l->getType());
+                DEBUG(dbgs() << "SWAP:" << *l << "\n");
+                BasicBlock::iterator ii(l);
+                ReplaceInstWithValue(l->getParent()->getInstList(), ii, cast);
             } else {
                 DEBUG(dbgs() << "OTHER:" << *from << "\n");
             }
@@ -368,4 +349,3 @@ private:
 
 char CPI::ID = 0;
 RegisterPass<CPI> X("cpi", "Code Pointer Integrity");
-
