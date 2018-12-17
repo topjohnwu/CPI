@@ -34,10 +34,10 @@ struct CPI : public ModulePass {
         nop = BinaryOperator::Create(Instruction::Add, zero, zero, "NOP",
                 M.getFunctionList().front().getEntryBlock().getFirstNonPHIOrDbg());
 
-        // Add global variables in libsafe_rt
+        // Add global variables rt.c
         smSp = new GlobalVariable(M, intT, false, GlobalValue::ExternalLinkage, nullptr, "__sm_sp");
 
-        // Add function references in libsafe_rt
+        // Add function references in rt.c
         smAlloca = cast<Function>(M.getOrInsertFunction("__sm_alloca", voidPPT));
         smMalloc = cast<Function>(M.getOrInsertFunction("__sm_malloc", voidPPT, voidPPT));
         smLoad = cast<Function>(M.getOrInsertFunction("__sm_load", voidPT, voidPPT, voidPPT));

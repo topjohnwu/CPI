@@ -10,6 +10,7 @@ int __sm_sp = 0;
 static void ***block_table;
 static int table_sz = 0;
 
+__attribute__((always_inline))
 static inline void **sm_alloca() {
     int block_num = __sm_sp >> 4;
     if (block_num == table_sz) {
@@ -35,6 +36,7 @@ void **__sm_malloc(void **ua) {
     return sa;
 }
 
+__attribute__((always_inline))
 void *__sm_load(void **sa, void **ua) {
     assert(*sa == *ua);
     return *sa;

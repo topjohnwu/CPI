@@ -13,10 +13,4 @@ if (APPLE)
 	list (APPEND CMAKE_CXX_FLAGS "-undefined dynamic_lookup")
 endif(APPLE)
 
-add_library(
-		safe_rt
-        STATIC
-		safe_rt/rt.c
-)
-
 add_subdirectory(pass)

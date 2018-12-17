@@ -38,10 +38,15 @@ name=${src%.*}.llvm
 
 # Compile test program with alloca-hoisting and mem2reg
 clang -emit-llvm -O1 -mllvm -disable-llvm-optzns -c $src -o - | opt -S -alloca-hoisting -mem2reg -o ${name}.ll || exit 1
-clang ${name}.ll -o ${name}.out
+clang -O2 ${name}.ll -o ${name}.out
 
 # Run CPI pass
 opt -S -o ${name}.p.ll -load ../build/pass/LLVMCPI.${dll} $CPI_FLAG ${name}.ll || exit 1
 
-# Build patched code and link to libsafe_rt
-clang ${name}.p.ll -L../build -lsafe_rt -o ${name}.p.out
+# Build patched code
+clang -O2 ${name}.p.ll ../rt.c -o ${name}.p.out
+exit
+
+# Generate combined bitcode
+clang -S -emit-llvm -c ../safe_rt/rt.c -o rt.llvm.ll
+llvm-link ${name}.p.ll rt.llvm.ll | opt -S -O2 -o ${name}.o.ll
