@@ -190,7 +190,8 @@ private:
             DEBUG(dbgs() << "ADD:" << *addr << "\n");
             GetElementPtrInst *orig = GetElementPtrInst::Create(nullptr, ssp,
                     {ConstantInt::get(intT, geps.first.first), ConstantInt::get(intT, geps.first.second)},
-                    addr->getName() + ".orig", addr->getNextNode());
+                    "", addr->getNextNode());
+            auto cast = CastInst::CreatePointerCast(orig, voidPPT, addr->getName() + ".orig", orig->getNextNode());
 
             for (auto u: geps.second) {
                 swapPtr(u, addr);
@@ -200,13 +201,15 @@ private:
             for (auto user : ssp->users()) {
                 CallInst *ci;
                 if ((ci = dyn_cast<CallInst>(user))) {
-                    commitAndRestore(addr, voidPT, orig, orig->getResultElementType(), ci);
+                    commitAndRestore(addr, cast, ci);
                 }
             }
 
             // Remove if not needed
-            if (orig->getNumUses() == 0)
+            if (cast->getNumUses() == 0) {
+                cast->eraseFromParent();
                 orig->eraseFromParent();
+            }
         }
 
         return true;
@@ -286,23 +289,21 @@ private:
     }
 
     // Commit sm memory to actual memory
-    void commit(Value *a, Value *b, Type *bType, Instruction *i) {
+    void commit(Value *a, Value *b, Instruction *i) {
         IRBuilder<> builder(i);
         auto v = builder.CreateLoad(a);
-        auto cast = builder.CreatePointerCast(v, bType);
-        builder.CreateStore(cast, b);
+        builder.CreateStore(v, b);
     }
 
-    void restore(Value *a, Type *aType, Value *b, Instruction *i) {
+    void restore(Value *a, Value *b, Instruction *i) {
         IRBuilder<> builder(i);
         auto v = builder.CreateLoad(b);
-        auto cast = builder.CreatePointerCast(v, aType);
-        builder.CreateStore(cast, a);
+        builder.CreateStore(v, a);
     }
 
-    void commitAndRestore(Value *a, Type *aType, Value *b, Type *bType, Instruction *i) {
-        commit(a, b, bType, i);
-        restore(a, aType, b, i->getNextNode());
+    void commitAndRestore(Value *a, Value *b, Instruction *i) {
+        commit(a, b, i);
+        restore(a, b, i->getNextNode());
     }
 
     std::vector<AllocaInst *> getSensitiveAlloca(BasicBlock &bb, const std::function<bool(AllocaInst *)> &filter) {
