@@ -22,19 +22,10 @@ static void F() {
 }
 
 static void test_1(int i);
-static void test_2(int i);
-static void test_3(struct bar *b);
-static void test_4(struct bar *b);
+static void test_2(struct bar *b);
+static void test_3(struct foo *f);
 
 static void test_1(int i) {
-    void (*fptr)();
-    fptr = i ? T : F;
-    fptr();
-    printf("* test_2\n");
-    test_2(i);
-}
-
-static void test_2(int i) {
     void (*fptr)();
     struct foo f;
     struct bar b;
@@ -50,23 +41,30 @@ static void test_2(int i) {
         b.f1 = F;
         b.f2 = F;
     }
-    printf("* test_3\n");
-    test_3(&b);
+    printf("* test_2\n");
+    test_2(&b);
+    printf("* test_1\n");
     fptr();
     f.func();
-    b.f1();
     b.f2();
 }
 
-static void test_3(struct bar *b) {
-    b->f2();
-    printf("* test_4\n");
-    test_4(b);
-    b->f2();
+static void test_2(struct bar *b) {
+    b->f1();
+    b->f2 = b->i ? F : T;
+    struct foo *f = malloc(sizeof(*f));
+    f->i = b->i;
+    f->func = b->f1;
+    printf("* test_3\n");
+    test_3(f);
+    printf("* test_2\n");
+    f->func();
+    free(f);
 }
 
-static void test_4(struct bar *b) {
-    b->f2 = b->i ? F : T;
+static void test_3(struct foo *f) {
+    f->func();
+    f->func = f->i ? F : T;
 }
 
 int main(int argc, char const *argv[]) {
@@ -76,8 +74,6 @@ int main(int argc, char const *argv[]) {
 
     int val = atoi(argv[1]);
 
-    printf("* test_1\n");
-    test_1(val);
     printf("* test_1\n");
     test_1(val);
 

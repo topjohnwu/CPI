@@ -9,6 +9,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/InstrTypes.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 #define DEBUG_TYPE "cpi"
@@ -27,6 +28,11 @@ struct CPI : public ModulePass {
         voidT = Type::getVoidTy(ctx);
         voidPT = Type::getInt8PtrTy(ctx);
         voidPPT = PointerType::get(voidPT, 0);
+
+        // Create NOP used for instruction insertion
+        auto zero = ConstantInt::get(intT, 0);
+        nop = BinaryOperator::Create(Instruction::Add, zero, zero, "NOP",
+                M.getFunctionList().front().getEntryBlock().getFirstNonPHIOrDbg());
 
         // Add global variables in libsafe_rt
         smSp = new GlobalVariable(M, intT, false, GlobalValue::ExternalLinkage, nullptr, "__sm_sp");
@@ -52,6 +58,9 @@ struct CPI : public ModulePass {
                 runOnFunction(F);
         }
 
+        // Remove NOP
+        nop->eraseFromParent();
+
         return true;
     }
 
@@ -66,6 +75,8 @@ private:
     PointerType *voidPT;
     PointerType *voidPPT;
 
+    Instruction *nop;
+
     // A map of StructType to the list of entries numbers that are function pointers
     std::map<Type*, std::vector<int> > ssMap;
 
@@ -77,7 +88,9 @@ private:
         // Alloca only happens in the first basic block
         hasInject |= swapFunctionPtrAlloca(entryBlock);
         hasInject |= handleStructAlloca(entryBlock);
-        hasInject |= handleStructPointers(F);
+
+        // Handle struct ptrs from unknown sources
+        hasInject |= handleStructPtrs(F);
 
         if (hasInject) {
             // Create checkpoint
@@ -108,23 +121,32 @@ private:
     bool handleStructAlloca(BasicBlock &bb) {
         bool hasInject = false;
         for (auto alloc: getSSAlloca(bb)) {
-            hasInject |= handleSSFPEntries(alloc, alloc->getNextNode());
+            nop->moveAfter(alloc);
+            hasInject |= replaceSSAllocaFPEntries(alloc);
         }
         return hasInject;
     }
 
-    bool handleStructPointers(Function &F) {
+    bool handleStructPtrs(Function &F) {
         bool hasInject = false;
-        auto fi = F.getEntryBlock().getFirstNonPHI();
+        nop->moveBefore(F.getEntryBlock().getFirstNonPHI());
         for (auto &arg : F.args()) {
             if (isSSPtr(arg.getType())) {
-                hasInject |= handleUSSFPEntries(&arg, fi);
+                hasInject |= replaceUnknownSrcSSFPEntries(&arg);
+            }
+        }
+        for (auto &bb : F) {
+            for (auto &I : bb) {
+                if (!isa<AllocaInst>(I) && isSSPtr(I.getType())) {
+                    nop->moveAfter(&I);
+                    hasInject |= replaceUnknownSrcSSFPEntries(&I);
+                }
             }
         }
         return hasInject;
     }
 
-    bool handleSSFPEntries(Value *ssp, Instruction *insert) {
+    bool replaceSSAllocaFPEntries(Value *ssp) {
         std::map<std::pair<int, int>, std::vector<GetElementPtrInst *> > rmMap;
         for (int sentry : ssMap[cast<PointerType>(ssp->getType())->getElementType()]) {
             for (auto user : ssp->users()) {
@@ -139,14 +161,12 @@ private:
             return false;
 
         for (const auto &geps : rmMap) {
-            IRBuilder<> b(insert);
+            IRBuilder<> b(nop);
             auto addr = b.CreateCall(smAlloca, None,
                     ssp->getName() + "." + std::to_string(geps.first.first) + "." + std::to_string(geps.first.second));
             DEBUG(dbgs() << "ADD:" << *addr << "\n");
-            auto tmp = GetElementPtrInst::Create(nullptr, ssp,
-                    {ConstantInt::get(intT, geps.first.first), ConstantInt::get(intT, geps.first.second)},
-                    "", addr->getNextNode());
-            auto orig = CastInst::CreatePointerCast(tmp, voidPPT, addr->getName() + ".orig", tmp->getNextNode());
+            auto tmp = b.CreateGEP(ssp, {ConstantInt::get(intT, geps.first.first), ConstantInt::get(intT, geps.first.second)});
+            auto orig = b.CreatePointerCast(tmp, voidPPT, addr->getName() + ".orig");
 
             for (auto u: geps.second) {
                 swapAllocaPtr(u, addr);
@@ -162,15 +182,15 @@ private:
 
             // Remove if not needed
             if (orig->getNumUses() == 0) {
-                orig->eraseFromParent();
-                tmp->eraseFromParent();
+                cast<Instruction>(orig)->eraseFromParent();
+                cast<Instruction>(tmp)->eraseFromParent();
             }
         }
 
         return true;
     }
 
-    bool handleUSSFPEntries(Value *ssp, Instruction *insert) {
+    bool replaceUnknownSrcSSFPEntries(Value *ssp) {
         std::map<std::pair<int, int>, std::vector<GetElementPtrInst *> > rmMap;
         for (int sentry : ssMap[cast<PointerType>(ssp->getType())->getElementType()]) {
             for (auto user : ssp->users()) {
@@ -188,7 +208,7 @@ private:
             std::string name(ssp->getName());
             name += "." + std::to_string(geps.first.first) + "." + std::to_string(geps.first.second);
 
-            IRBuilder<> b(insert);
+            IRBuilder<> b(nop);
             auto tmp = b.CreateGEP(ssp,
                     {ConstantInt::get(intT, geps.first.first), ConstantInt::get(intT, geps.first.second)});
             auto orig = b.CreatePointerCast(tmp, voidPPT, name + ".orig");
