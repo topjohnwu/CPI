@@ -18,35 +18,37 @@ fi
 
 case `uname -s` in
   Linux)
-	dll=so
-	CPI_FLAG="-cpi"
-	;;
+    dll=so
+    CPI_FLAG="-cpi"
+    ;;
   Darwin)
-	dll=dylib
-	CPI_FLAG="-cpi -debug-only=cpi"
-	;;
+    dll=dylib
+    CPI_FLAG="-cpi -debug-only=cpi"
+    ;;
   *)
-	exit 1
-	;;
+    exit 1
+    ;;
 esac
 
 src=$1
 name=${src%.*}.llvm
+
+OPT=-O2
 
 # Compile test program
 # clang -S -emit-llvm -c $src -o ${name}.ll
 
 # Compile test program with alloca-hoisting and mem2reg
 clang -emit-llvm -O1 -mllvm -disable-llvm-optzns -c $src -o - | opt -S -alloca-hoisting -mem2reg -o ${name}.ll || exit 1
-clang -O2 ${name}.ll -o ${name}.out
+clang $OPT ${name}.ll -o ${name}.out
 
 # Run CPI pass
-opt -S -o ${name}.p.ll -load ../build/pass/LLVMCPI.${dll} $CPI_FLAG ${name}.ll || exit 1
+opt -S -o ${name}.p.ll -load ../build/pass/LLVMCPI.${dll} -stats $CPI_FLAG ${name}.ll || exit 1
 
 # Build patched code
-clang -O2 ${name}.p.ll ../rt.c -o ${name}.p.out
+clang $OPT ${name}.p.ll ../rt.c -o ${name}.p.out
 exit
 
 # Generate combined bitcode
-clang -S -emit-llvm -c ../safe_rt/rt.c -o rt.llvm.ll
-llvm-link ${name}.p.ll rt.llvm.ll | opt -S -O2 -o ${name}.o.ll
+clang -S -emit-llvm -c ../rt.c -o rt.llvm.ll
+llvm-link ${name}.p.ll rt.llvm.ll | opt -S $OPT -o ${name}.o.ll

@@ -1,6 +1,7 @@
 #include <vector>
 #include <map>
 
+#include "llvm/ADT/Statistic.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -13,6 +14,15 @@
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 #define DEBUG_TYPE "cpi"
+
+STATISTIC(NumSMAlloca, "Number of __sm_alloca");
+STATISTIC(NumSMMalloc, "Number of __sm_malloc");
+STATISTIC(NumRMStore, "Number of replaced stack stores");
+STATISTIC(NumRMLoad, "Number of replaced stack loads");
+STATISTIC(NumRMPStore, "Number of replaced stores");
+STATISTIC(NumRMPLoad, "Number of replaced loads");
+STATISTIC(NumCommit, "Number of commits");
+STATISTIC(NumRestore, "Number of restores");
 
 using namespace llvm;
 
@@ -112,6 +122,7 @@ private:
             std::string name(alloc->getName());
             auto addr = b.CreateCall(smAlloca);
             DEBUG(dbgs() << "ADD:" << *addr << "\n");
+            NumSMAlloca++;
             swapAllocaPtr(alloc, addr);
             addr->setName(name);
         }
@@ -165,6 +176,7 @@ private:
             auto addr = b.CreateCall(smAlloca, None,
                     ssp->getName() + "." + std::to_string(geps.first.first) + "." + std::to_string(geps.first.second));
             DEBUG(dbgs() << "ADD:" << *addr << "\n");
+            NumSMAlloca++;
             auto tmp = b.CreateGEP(ssp, {ConstantInt::get(intT, geps.first.first), ConstantInt::get(intT, geps.first.second)});
             auto orig = b.CreatePointerCast(tmp, voidPPT, addr->getName() + ".orig");
 
@@ -213,8 +225,8 @@ private:
                     {ConstantInt::get(intT, geps.first.first), ConstantInt::get(intT, geps.first.second)});
             auto orig = b.CreatePointerCast(tmp, voidPPT, name + ".orig");
             auto addr = b.CreateCall(smMalloc, orig, name);
-
             DEBUG(dbgs() << "ADD:" << *addr << "\n");
+            NumSMMalloc++;
 
             for (auto u: geps.second) {
                 swapUnknownSrcPtr(u, addr, orig);
@@ -242,12 +254,14 @@ private:
                 auto cast = b.CreatePointerCast(s->getValueOperand(), voidPT);
                 b.CreateStore(cast, to);
                 DEBUG(dbgs() << "SWAP:" << *s << "\n");
+                NumRMStore++;
                 s->eraseFromParent();
             } else if ((l = dyn_cast<LoadInst>(a))) {
                 IRBuilder<> b(l);
                 auto raw = b.CreateLoad(to);
                 auto cast = b.CreatePointerCast(raw, l->getType());
                 DEBUG(dbgs() << "SWAP:" << *l << "\n");
+                NumRMLoad++;
                 BasicBlock::iterator ii(l);
                 ReplaceInstWithValue(l->getParent()->getInstList(), ii, cast);
             } else {
@@ -271,12 +285,14 @@ private:
                 b.CreateStore(cast, to);
                 b.CreateStore(cast, orig);
                 DEBUG(dbgs() << "SWAP:" << *s << "\n");
+                NumRMPStore++;
                 s->eraseFromParent();
             } else if ((l = dyn_cast<LoadInst>(a))) {
                 IRBuilder<> b(l);
                 auto raw = b.CreateCall(smLoad, {to, orig});
                 auto cast = b.CreatePointerCast(raw, l->getType());
                 DEBUG(dbgs() << "SWAP:" << *l << "\n");
+                NumRMPLoad++;
                 BasicBlock::iterator ii(l);
                 ReplaceInstWithValue(l->getParent()->getInstList(), ii, cast);
             } else {
@@ -294,12 +310,14 @@ private:
         IRBuilder<> builder(i);
         auto v = builder.CreateLoad(a);
         builder.CreateStore(v, b);
+        NumCommit++;
     }
 
     void restore(Value *a, Value *b, Instruction *i) {
         IRBuilder<> builder(i);
         auto v = builder.CreateLoad(b);
         builder.CreateStore(v, a);
+        NumRestore++;
     }
 
     void commitAndRestore(Value *a, Value *b, Instruction *i) {
