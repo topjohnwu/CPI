@@ -13,6 +13,11 @@ struct bar {
     void (*f2)();
 };
 
+struct baz {
+    size_t i;
+    void (*f)(size_t s);
+};
+
 static void T() {
     printf("T\n");
 }
@@ -21,9 +26,26 @@ static void F() {
     printf("F\n");
 }
 
+static void good(size_t s) {
+    printf("Proper control flow!\n");
+}
+
+static void bad(size_t s) {
+    printf("Hijacked control flow!\n");
+}
+
 static void test_1(int i);
 static void test_2(struct bar *b);
 static void test_3(struct foo *f);
+
+static void vuln(int off, size_t val) {
+    struct baz b;
+    size_t buf[4];
+    printf("Vuln offset: %ld\n", ((void * )&b.f - (void *) buf) / (ssize_t) sizeof(size_t));
+    b.f = good;
+    buf[off] = val;
+    b.f(buf[off]);
+}
 
 static void test_1(int i) {
     void (*fptr)();
@@ -74,6 +96,11 @@ int main(int argc, char const *argv[]) {
 
     int val = atoi(argv[1]);
 
+    /* Test control flow hijack */
+    printf("------- Control Flow Test -------\n");
+    vuln(val, (size_t) bad);
+
+    printf("------- Correctness Test -------\n");
     printf("* test_1\n");
     test_1(val);
 

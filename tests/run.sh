@@ -33,7 +33,7 @@ esac
 src=$1
 name=${src%.*}.llvm
 
-OPT=-O2
+OPT=-O0
 
 # Compile test program
 # clang -S -emit-llvm -c $src -o ${name}.ll
